@@ -1,0 +1,74 @@
+# Smoke test of a published MapHarvest release on real Windows and macOS: install as a customer would, open it,
+# screenshot the window, and (from 0.1.3) read smoke.json written by MAPHARVEST_SMOKE = one real Google Maps search.
+name: smoke
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (default: latest)"
+        required: false
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Download and install
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag }}"; if (-not $tag) { $tag = "${{ github.event.release.tag_name }}" }
+          $base = if ($tag) { "https://github.com/${{ github.repository }}/releases/download/$tag" } else { "https://github.com/${{ github.repository }}/releases/latest/download" }
+          Invoke-WebRequest "$base/MapHarvest-Windows.exe" -OutFile setup.exe
+          Start-Process .\setup.exe -ArgumentList "/S" -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter mapharvest.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "mapharvest.exe not installed" }
+          "EXE=$($exe.FullName)" | Out-File -Append $env:GITHUB_ENV
+      - name: Open, search once, screenshot
+        shell: pwsh
+        run: |
+          $env:MAPHARVEST_SMOKE = "dentist in Riyadh"
+          $p = Start-Process $env:EXE -PassThru
+          Start-Sleep 40
+          if ($p.HasExited) { throw "app exited with code $($p.ExitCode)" }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("windows.png")
+          $smoke = Join-Path $env:APPDATA "app.mapharvest.desktop\smoke.json"
+          if (Test-Path $smoke) { Get-Content $smoke; Copy-Item $smoke smoke-windows.json } else { "no smoke.json (release before 0.1.3?)" }
+          Stop-Process $p -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            windows.png
+            smoke-windows.json
+          if-no-files-found: ignore
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Download and open
+        run: |
+          tag="${{ github.event.inputs.tag }}"; [ -z "$tag" ] && tag="${{ github.event.release.tag_name }}"
+          if [ -n "$tag" ]; then base="https://github.com/${{ github.repository }}/releases/download/$tag"; else base="https://github.com/${{ github.repository }}/releases/latest/download"; fi
+          curl -fsSL "$base/MapHarvest-Mac.zip" -o mh.zip && ditto -x -k mh.zip . && xattr -cr MapHarvest.app
+          MAPHARVEST_SMOKE="dentist in Riyadh" ./MapHarvest.app/Contents/MacOS/mapharvest > app.log 2>&1 &
+          echo $! > app.pid
+          sleep 40
+          kill -0 "$(cat app.pid)" || { echo "app exited"; cat app.log; exit 1; }
+          screencapture -x macos.png || true
+          s="$HOME/Library/Application Support/app.mapharvest.desktop/smoke.json"
+          if [ -f "$s" ]; then cat "$s"; cp "$s" smoke-macos.json; else echo "no smoke.json (release before 0.1.3?)"; fi
+          head -40 app.log
+          kill "$(cat app.pid)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            macos.png
+            smoke-macos.json
+            app.log
+          if-no-files-found: ignore
