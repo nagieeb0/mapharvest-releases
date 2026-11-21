@@ -2,22 +2,30 @@
 # «أعد التشغيل» in the update bar through the accessibility tree, then check the installed version and run one search.
 name: update
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       from:
         description: "Release tag to start from"
-        required: true
-        default: v0.1.4
+        required: false
 permissions:
   contents: read
 jobs:
   windows:
     runs-on: windows-latest
     steps:
+      - name: Pick the old release
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          f="${{ inputs.from }}"
+          [ -z "$f" ] && f=$(gh release list --repo ${{ github.repository }} --exclude-pre-releases --limit 2 --json tagName -q '.[1].tagName')
+          echo "FROM=$f" >> "$GITHUB_ENV"; echo "from $f"
       - name: Install the old release
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/download/${{ inputs.from }}/MapHarvest-Windows.exe" -OutFile old.exe
+          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/download/$env:FROM/MapHarvest-Windows.exe" -OutFile old.exe
           Start-Process .\old.exe -ArgumentList "/S" -Wait
           $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter mapharvest.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           "EXE=$($exe.FullName)" | Out-File -Append $env:GITHUB_ENV
@@ -55,10 +63,17 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
+      - name: Pick the old release
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          f="${{ inputs.from }}"
+          [ -z "$f" ] && f=$(gh release list --repo ${{ github.repository }} --exclude-pre-releases --limit 2 --json tagName -q '.[1].tagName')
+          echo "FROM=$f" >> "$GITHUB_ENV"; echo "from $f"
       - name: Install the old release
         run: |
           mkdir -p "$HOME/Applications" && cd "$HOME/Applications"
-          curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${{ inputs.from }}/MapHarvest-Mac.zip" -o mh.zip && ditto -x -k mh.zip . && xattr -cr MapHarvest.app
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/download/$FROM/MapHarvest-Mac.zip" -o mh.zip && ditto -x -k mh.zip . && xattr -cr MapHarvest.app
           echo "installed: $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' MapHarvest.app/Contents/Info.plist)"
       - name: Open, wait for the update bar, press restart
         run: |
