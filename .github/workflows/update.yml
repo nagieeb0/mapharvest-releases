@@ -1,0 +1,102 @@
+# Update test on real Windows and macOS: install the previous release, let the app download the latest, press
+# «أعد التشغيل» in the update bar through the accessibility tree, then check the installed version and run one search.
+name: update
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Release tag to start from"
+        required: true
+        default: v0.1.4
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Install the old release
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/download/${{ inputs.from }}/MapHarvest-Windows.exe" -OutFile old.exe
+          Start-Process .\old.exe -ArgumentList "/S" -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter mapharvest.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          "EXE=$($exe.FullName)" | Out-File -Append $env:GITHUB_ENV
+          "installed: $($exe.VersionInfo.ProductVersion)"
+      - name: Open, wait for the update bar, press restart
+        shell: pwsh
+        run: |
+          $p = Start-Process $env:EXE -PassThru
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
+          $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "أعد التشغيل")
+          $btn = $null
+          for ($i = 0; $i -lt 60 -and -not $btn; $i++) { Start-Sleep 2; $btn = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond) }
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); $bmp.Save("win-bar.png")
+          if (-not $btn) { throw "update bar never appeared" }
+          "found the restart button after $($i*2) s"
+          $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+          Start-Sleep 60
+      - name: Check the installed version and search once
+        shell: pwsh
+        run: |
+          Get-Process mapharvest -ErrorAction SilentlyContinue | Stop-Process -Force
+          $v = (Get-Item $env:EXE).VersionInfo.ProductVersion; "installed now: $v"
+          $smoke = Join-Path $env:APPDATA "app.mapharvest.desktop\smoke.json"; Remove-Item $smoke -ErrorAction SilentlyContinue
+          $env:MAPHARVEST_SMOKE = "dentist in Riyadh"; $p = Start-Process $env:EXE -PassThru
+          for ($i = 0; $i -lt 30 -and -not (Test-Path $smoke); $i++) { Start-Sleep 2 }
+          Get-Content $smoke; Copy-Item $smoke smoke-windows.json; Stop-Process $p -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            win-bar.png
+            smoke-windows.json
+          if-no-files-found: ignore
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Install the old release
+        run: |
+          mkdir -p "$HOME/Applications" && cd "$HOME/Applications"
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${{ inputs.from }}/MapHarvest-Mac.zip" -o mh.zip && ditto -x -k mh.zip . && xattr -cr MapHarvest.app
+          echo "installed: $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' MapHarvest.app/Contents/Info.plist)"
+      - name: Open, wait for the update bar, press restart
+        run: |
+          open "$HOME/Applications/MapHarvest.app"
+          ok=""
+          for i in $(seq 1 40); do
+            sleep 3
+            r=$(osascript -e 'tell application "System Events" to tell process "mapharvest"
+              set hits to {}
+              try
+                set hits to (every UI element of entire contents of window 1 whose role is "AXButton" and (name is "أعد التشغيل" or description is "أعد التشغيل" or title is "أعد التشغيل"))
+              end try
+              if (count of hits) > 0 then
+                click item 1 of hits
+                return "clicked"
+              end if
+              return "waiting"
+            end tell' 2>&1)
+            echo "$i: $r"
+            [ "$r" = clicked ] && { ok=1; break; }
+          done
+          screencapture -x mac-bar.png || true
+          [ -n "$ok" ] || { echo "could not press the button"; exit 1; }
+          sleep 45
+      - name: Check the installed version and search once
+        if: always()
+        run: |
+          pkill -x mapharvest || true; sleep 2
+          echo "installed now: $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$HOME/Applications/MapHarvest.app/Contents/Info.plist")"
+          s="$HOME/Library/Application Support/app.mapharvest.desktop/smoke.json"; rm -f "$s"
+          MAPHARVEST_SMOKE="dentist in Riyadh" "$HOME/Applications/MapHarvest.app/Contents/MacOS/mapharvest" > app.log 2>&1 &
+          for i in $(seq 1 30); do [ -f "$s" ] && break; sleep 2; done
+          cat "$s"; cp "$s" smoke-macos.json; pkill -x mapharvest || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos
+          path: |
+            mac-bar.png
+            smoke-macos.json
+          if-no-files-found: ignore
