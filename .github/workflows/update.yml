@@ -62,7 +62,7 @@ jobs:
           echo "installed: $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' MapHarvest.app/Contents/Info.plist)"
       - name: Open, wait for the update bar, press restart
         run: |
-          open "$HOME/Applications/MapHarvest.app"
+          "$HOME/Applications/MapHarvest.app/Contents/MacOS/mapharvest" > "$GITHUB_WORKSPACE/app-old.log" 2>&1 &
           ok=""
           for i in $(seq 1 40); do
             sleep 3
@@ -81,6 +81,7 @@ jobs:
             [ "$r" = clicked ] && { ok=1; break; }
           done
           screencapture -x mac-bar.png || true
+          cat app-old.log | head -40
           [ -n "$ok" ] || { echo "could not press the button"; exit 1; }
           sleep 45
       - name: Check the installed version and search once
@@ -99,4 +100,5 @@ jobs:
           path: |
             mac-bar.png
             smoke-macos.json
+            app-old.log
           if-no-files-found: ignore
